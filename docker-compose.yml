@@ -2,8 +2,10 @@ services:
   rabbitmq:
     image: rabbitmq:3.13-management-alpine
     container_name: uretos-rabbitmq
+    env_file:
+      - .env
     ports:
-      - "5673:5672"   # AMQP protocol port mapped to 5673 on host
+      - "5673:5672"   # AMQP protocol port
       - "15672:15672" # Management UI
     environment:
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER}
@@ -16,6 +18,27 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - uretos-net
+
+  machine-api:
+    build:
+      context: ./services/machine-api
+      dockerfile: Dockerfile
+    container_name: uretos-machine-api
+    env_file:
+      - .env
+    ports:
+      - "8000:8000"
+    environment:
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS}
+      SERVICE_VERSION: "0.1.0"
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
     networks:
       - uretos-net
 

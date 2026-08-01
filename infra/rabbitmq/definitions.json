@@ -5,6 +5,24 @@
       "name": "/"
     }
   ],
+  "users": [
+    {
+      "name": "uretos",
+      "password": "uretos_dev_pass",
+      "tags": [
+        "administrator"
+      ]
+    }
+  ],
+  "permissions": [
+    {
+      "user": "uretos",
+      "vhost": "/",
+      "configure": ".*",
+      "write": ".*",
+      "read": ".*"
+    }
+  ],
   "exchanges": [
     {
       "name": "uretos.events",
