@@ -42,6 +42,58 @@ services:
     networks:
       - uretos-net
 
+  machine-db:
+    image: postgres:16-alpine
+    container_name: uretos-machine-db
+    env_file:
+      - .env
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-uretos}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-uretos_dev_pass}
+      POSTGRES_DB: machine_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - machine_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U uretos -d machine_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - uretos-net
+
+  machine-storage:
+    build:
+      context: ./services/machine-storage
+      dockerfile: Dockerfile
+    container_name: uretos-machine-storage
+    env_file:
+      - .env
+    ports:
+      - "8001:8001"
+    environment:
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS}
+      POSTGRES_HOST: machine-db
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-uretos}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-uretos_dev_pass}
+      POSTGRES_DB: machine_db
+      SERVICE_VERSION: "0.1.0"
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      machine-db:
+        condition: service_healthy
+    networks:
+      - uretos-net
+
+volumes:
+  machine_db_data:
+
 networks:
   uretos-net:
     driver: bridge
