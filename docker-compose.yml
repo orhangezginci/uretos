@@ -5,8 +5,8 @@ services:
     env_file:
       - .env
     ports:
-      - "5673:5672"   # AMQP protocol port
-      - "15672:15672" # Management UI
+      - "5673:5672"
+      - "15672:15672"
     environment:
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER}
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS}
@@ -21,6 +21,7 @@ services:
     networks:
       - uretos-net
 
+  # --- Machine Domain Services ---
   machine-api:
     build:
       context: ./services/machine-api
@@ -140,9 +141,131 @@ services:
     networks:
       - uretos-net
 
+  # --- Multilingual LOV Domain Services ---
+  lov-api:
+    build:
+      context: ./services/lov-api
+      dockerfile: Dockerfile
+    container_name: uretos-lov-api
+    env_file:
+      - .env
+    ports:
+      - "8003:8003"
+    environment:
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS}
+      SERVICE_VERSION: "0.1.0"
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - uretos-net
+
+  lov-db:
+    image: postgres:16-alpine
+    container_name: uretos-lov-db
+    env_file:
+      - .env
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-uretos}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-uretos_dev_pass}
+      POSTGRES_DB: lov_db
+    ports:
+      - "5434:5432"
+    volumes:
+      - lov_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U uretos -d lov_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - uretos-net
+
+  lov-storage:
+    build:
+      context: ./services/lov-storage
+      dockerfile: Dockerfile
+    container_name: uretos-lov-storage
+    env_file:
+      - .env
+    ports:
+      - "8005:8005"
+    environment:
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS}
+      POSTGRES_HOST: lov-db
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-uretos}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-uretos_dev_pass}
+      POSTGRES_DB: lov_db
+      SERVICE_VERSION: "0.1.0"
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      lov-db:
+        condition: service_healthy
+    networks:
+      - uretos-net
+
+  lov-query-db:
+    image: postgres:16-alpine
+    container_name: uretos-lov-query-db
+    env_file:
+      - .env
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-uretos}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-uretos_dev_pass}
+      POSTGRES_DB: lov_query_db
+    ports:
+      - "5435:5432"
+    volumes:
+      - lov_query_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U uretos -d lov_query_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - uretos-net
+
+  lov-query:
+    build:
+      context: ./services/lov-query
+      dockerfile: Dockerfile
+    container_name: uretos-lov-query
+    env_file:
+      - .env
+    ports:
+      - "8004:8004"
+    environment:
+      RABBITMQ_HOST: rabbitmq
+      RABBITMQ_PORT: 5672
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS}
+      POSTGRES_HOST: lov-query-db
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-uretos}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-uretos_dev_pass}
+      POSTGRES_DB: lov_query_db
+      SERVICE_VERSION: "0.1.0"
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      lov-query-db:
+        condition: service_healthy
+    networks:
+      - uretos-net
+
 volumes:
   machine_db_data:
   machine_query_db_data:
+  lov_db_data:
+  lov_query_db_data:
 
 networks:
   uretos-net:
