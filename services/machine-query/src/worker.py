@@ -24,8 +24,9 @@ class MachineReadModel(Base):
     id = Column(String, primary_key=True)
     name = Column(String, nullable=False)
     serial_number = Column(String, nullable=False)
-    machine_type = Column(String, nullable=False)
-    machine_manufacturer = Column(String, nullable=False)
+    machine_type_id = Column(String, nullable=False)
+    manufacturer_id = Column(String, nullable=True)
+    status_id = Column(String, nullable=True)
     updated_at = Column(DateTime, default=datetime.utcnow)
 
 Base.metadata.create_all(bind=engine)
@@ -41,26 +42,30 @@ def process_event(ch, method, properties, body):
         msg_type = cloud_event.get("type")
         data = cloud_event.get("data", {})
 
-        if msg_type == "uretos.machine.event.created":
+        # Unterstützt sowohl uretos.machine.event.created als auch direct event handling
+        if msg_type == "uretos.machine.event.created" or "machine_type_id" in data:
             db = SessionLocal()
             try:
-                # Upsert into Read Projection Table
-                existing = db.query(MachineReadModel).filter(MachineReadModel.id == data["machine_id"]).first()
+                machine_id = data.get("id") or data.get("machine_id")
+                existing = db.query(MachineReadModel).filter(MachineReadModel.id == machine_id).first()
+                
                 if not existing:
                     projection = MachineReadModel(
-                        id=data["machine_id"],
-                        name=data["name"],
-                        serial_number=data["serial_number"],
-                        machine_type=data["machine_type"],
-                        machine_manufacturer=data["machine_manufacturer"],
+                        id=machine_id,
+                        name=data.get("name"),
+                        serial_number=data.get("serial_number"),
+                        machine_type_id=data.get("machine_type_id"),
+                        manufacturer_id=data.get("manufacturer_id"),
+                        status_id=data.get("status_id"),
                         updated_at=datetime.utcnow()
                     )
                     db.add(projection)
                 else:
-                    existing.name = data["name"]
-                    existing.serial_number = data["serial_number"]
-                    existing.machine_type = data["machine_type"]
-                    existing.machine_manufacturer = data["machine_manufacturer"]
+                    existing.name = data.get("name")
+                    existing.serial_number = data.get("serial_number")
+                    existing.machine_type_id = data.get("machine_type_id")
+                    existing.manufacturer_id = data.get("manufacturer_id")
+                    existing.status_id = data.get("status_id")
                     existing.updated_at = datetime.utcnow()
                 
                 db.commit()
@@ -69,7 +74,7 @@ def process_event(ch, method, properties, body):
 
         ch.basic_ack(delivery_tag=method.delivery_tag)
     except Exception as e:
-        print(f"[machine-query] Error processing event projection: {e}")
+        print(f"[machine-query] Error processing event projection: {e}", flush=True)
         ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
 
 def start_event_consumer():
@@ -98,5 +103,8 @@ def start_event_consumer():
             )
             channel.start_consuming()
         except Exception as e:
-            print(f"[machine-query] Connection waiting... ({e})")
+            print(f"[machine-query] Connection waiting... ({e})", flush=True)
             time.sleep(3)
+
+if __name__ == "__main__":
+    start_event_consumer()

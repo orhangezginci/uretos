@@ -2,15 +2,16 @@ import os
 import json
 import time
 import threading
-from typing import List, Optional, Dict
+import uuid
+from typing import List, Dict
 from datetime import datetime
 
 import pika
 from fastapi import FastAPI, Query, Depends
 from pydantic import BaseModel
 
-from sqlalchemy import create_engine, Column, String, Integer, DateTime, UniqueConstraint
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy import create_engine, Column, String, DateTime, UniqueConstraint
+from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import declarative_base, sessionmaker, Session
 
 # --- Database & Config ---
@@ -26,11 +27,11 @@ engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
-# --- PostgreSQL JSONB Projection Entity ---
+# --- PostgreSQL Entity with UUIDv4 Primary Key ---
 class LovItemProjection(Base):
     __tablename__ = "lov_items"
 
-    id = Column(Integer, primary_key=True, autoincrement=True)
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     category = Column(String, index=True, nullable=False)
     code = Column(String, nullable=False)
     translations = Column(JSONB, nullable=False, default={})
@@ -95,13 +96,18 @@ def start_event_consumer():
                         try:
                             item = db.query(LovItemProjection).filter_by(category=category, code=code).first()
                             if not item:
-                                item = LovItemProjection(category=category, code=code, translations=translations)
+                                item = LovItemProjection(
+                                    id=uuid.uuid4(),
+                                    category=category,
+                                    code=code,
+                                    translations=translations
+                                )
                                 db.add(item)
                             else:
                                 item.translations = translations
 
                             db.commit()
-                            print(f"[lov-query] Projected LOV entry (JSONB): {category}/{code}", flush=True)
+                            print(f"[lov-query] Projected LOV entry (JSONB/UUID): {category}/{code}", flush=True)
                         except Exception as ex:
                             db.rollback()
                             print(f"[lov-query] DB projection error: {ex}", flush=True)
@@ -124,6 +130,8 @@ def start_event_consumer():
 
 # --- FastAPI Application ---
 class LovResponseDTO(BaseModel):
+    id: str
+    category: str
     code: str
     value: str
 
@@ -168,6 +176,11 @@ def get_lov_by_category(
             (next(iter(trans.values())) if trans else item.code)
         )
         
-        result.append(LovResponseDTO(code=item.code, value=resolved_value))
+        result.append(LovResponseDTO(
+            id=str(item.id),
+            category=item.category,
+            code=item.code,
+            value=resolved_value
+        ))
 
     return result

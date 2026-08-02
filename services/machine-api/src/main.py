@@ -1,93 +1,130 @@
-from datetime import datetime, timezone
 import os
-import uuid
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, UUID4
-import pika
 import json
+import uuid
+import time
+from typing import Optional
 
-app = FastAPI(title="uretOS Machine API", version="0.1.0")
+import pika
+import redis
+from fastapi import FastAPI, HTTPException, status
+from pydantic import BaseModel, Field
 
-# Transport & Infrastructure Configuration
+# --- Redis Setup ---
+REDIS_HOST = os.getenv("REDIS_HOST", "redis")
+REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
+redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0, decode_responses=True)
+
+# --- RabbitMQ Setup ---
 RABBITMQ_HOST = os.getenv("RABBITMQ_HOST", "rabbitmq")
 RABBITMQ_PORT = int(os.getenv("RABBITMQ_PORT", "5672"))
 RABBITMQ_USER = os.getenv("RABBITMQ_DEFAULT_USER", "uretos")
 RABBITMQ_PASS = os.getenv("RABBITMQ_DEFAULT_PASS", "uretos_dev_pass")
-SERVICE_VERSION = os.getenv("SERVICE_VERSION", "0.1.0")
 
-class CreateMachineRequest(BaseModel):
-    name: str
-    serial_number: str
-    machine_type: UUID4
-    machine_manufacturer: UUID4
+EXCHANGE_COMMANDS = "uretos_commands"
+ROUTING_KEY_CREATE_MACHINE = "uretos.machine.command.create"
 
-# --- Standard System Endpoints ---
 
-@app.get("/healthy")
-def healthy():
-    return {
-        "status": "healthy",
-        "service": "machine-api",
-        "timestamp": datetime.now(timezone.utc).isoformat()
-    }
-
-@app.get("/version")
-def version():
-    return {
-        "service": "machine-api",
-        "version": SERVICE_VERSION
-    }
-
-# --- Domain API Endpoints ---
-
-@app.post("/api/v1/machines", status_code=202)
-def create_machine(request: CreateMachineRequest):
-    correlation_id = str(uuid.uuid4())
-    event_id = str(uuid.uuid4())
-    
-    cloud_event = {
-        "specversion": "1.0",
-        "id": event_id,
-        "source": "uretos/services/machine-api",
-        "type": "uretos.machine.command.create",
-        "datacontenttype": "application/json",
-        "time": datetime.now(timezone.utc).isoformat(),
-        "correlationid": correlation_id,
-        "messagetype": "command",
-        "data": {
-            "name": request.name,
-            "serial_number": request.serial_number,
-            "machine_type": str(request.machine_type),
-            "machine_manufacturer": str(request.machine_manufacturer)
-        }
-    }
-
+def publish_command(routing_key: str, payload: dict) -> bool:
+    """Publishes a command message to the RabbitMQ command exchange."""
     try:
         credentials = pika.PlainCredentials(RABBITMQ_USER, RABBITMQ_PASS)
-        parameters = pika.ConnectionParameters(
-            host=RABBITMQ_HOST,
-            port=RABBITMQ_PORT,
-            credentials=credentials
-        )
-        connection = pika.BlockingConnection(parameters)
-        channel = connection.channel()
-
-        channel.basic_publish(
-            exchange="uretos.events",
-            routing_key="uretos.machine.command.create",
-            body=json.dumps(cloud_event),
-            properties=pika.BasicProperties(
-                content_type="application/json",
-                correlation_id=correlation_id,
-                delivery_mode=2
+        connection = pika.BlockingConnection(
+            pika.ConnectionParameters(
+                host=RABBITMQ_HOST,
+                port=RABBITMQ_PORT,
+                credentials=credentials,
+                connection_attempts=3,
+                retry_delay=2,
             )
         )
+        channel = connection.channel()
+
+        channel.exchange_declare(
+            exchange=EXCHANGE_COMMANDS, exchange_type="topic", durable=True
+        )
+
+        message_body = json.dumps(payload)
+        channel.basic_publish(
+            exchange=EXCHANGE_COMMANDS,
+            routing_key=routing_key,
+            body=message_body,
+            properties=pika.BasicProperties(
+                delivery_mode=2,  # Persistent
+                content_type="application/json",
+            ),
+        )
         connection.close()
+        return True
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to publish command: {str(e)}")
+        print(f"[machine-api] Failed to publish command to RabbitMQ: {e}", flush=True)
+        return False
+
+
+# --- DTOs ---
+class MachineCreateDTO(BaseModel):
+    name: str = Field(..., min_length=1, description="Name of the machine")
+    serial_number: str = Field(..., min_length=1, description="Unique serial number")
+    machine_type_id: str = Field(..., description="Valid UUIDv4 of an existing machine_type LOV")
+    manufacturer_id: Optional[str] = Field(None, description="Valid UUIDv4 of an existing manufacturer LOV")
+    status_id: Optional[str] = Field(None, description="Valid UUIDv4 of an existing status LOV")
+
+
+# --- FastAPI App ---
+app = FastAPI(title="uRetOS Machine API Gateway", version="0.1.0")
+
+
+@app.get("/healthz")
+def healthz():
+    return {"status": "ok", "service": "machine-api"}
+
+
+@app.post("/api/v1/machines", status_code=status.HTTP_202_ACCEPTED)
+def create_machine(payload: MachineCreateDTO):
+    # 1. Strikte Domain-Validierung: Prüfe machine_type_id gegen Redis
+    type_keys = redis_client.keys(f"lov:{payload.machine_type_id}:*")
+    if not type_keys:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid machine_type_id: '{payload.machine_type_id}' does not exist in LOV storage."
+        )
+
+    # 2. Strikte Domain-Validierung: Prüfe manufacturer_id (falls übergeben) gegen Redis
+    if payload.manufacturer_id:
+        manuf_keys = redis_client.keys(f"lov:{payload.manufacturer_id}:*")
+        if not manuf_keys:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid manufacturer_id: '{payload.manufacturer_id}' does not exist in LOV storage."
+            )
+
+    # 3. Validierung bestanden -> Machine Creation Command bauen
+    machine_id = str(uuid.uuid4())
+    command_id = str(uuid.uuid4())
+
+    command_payload = {
+        "command_id": command_id,
+        "timestamp": time.time(),
+        "data": {
+            "id": machine_id,
+            "name": payload.name,
+            "serial_number": payload.serial_number,
+            "machine_type_id": payload.machine_type_id,
+            "manufacturer_id": payload.manufacturer_id,
+            "status_id": payload.status_id,
+        },
+    }
+
+    # 4. Command auf Message Broker publishen
+    published = publish_command(ROUTING_KEY_CREATE_MACHINE, command_payload)
+    if not published:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to queue machine creation command due to message broker error."
+        )
 
     return {
-        "status": "command_accepted",
-        "correlation_id": correlation_id,
-        "event_id": event_id
+        "status": "accepted",
+        "command_id": command_id,
+        "machine_id": machine_id,
+        "message": "Machine creation command validated and queued for processing."
     }

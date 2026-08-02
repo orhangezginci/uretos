@@ -1,4 +1,17 @@
 services:
+  redis:
+    image: redis:7-alpine
+    container_name: uretos-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - uretos-net 
+
   rabbitmq:
     image: rabbitmq:3.13-management-alpine
     container_name: uretos-rabbitmq
@@ -132,11 +145,15 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-uretos}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-uretos_dev_pass}
       POSTGRES_DB: machine_query_db
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
       SERVICE_VERSION: "0.1.0"
     depends_on:
       rabbitmq:
         condition: service_healthy
       machine-query-db:
+        condition: service_healthy
+      redis:
         condition: service_healthy
     networks:
       - uretos-net

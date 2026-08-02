@@ -26,8 +26,9 @@ class MachineModel(Base):
     id = Column(String, primary_key=True)
     name = Column(String, nullable=False)
     serial_number = Column(String, nullable=False, unique=True)
-    machine_type = Column(String, nullable=False)
-    machine_manufacturer = Column(String, nullable=False)
+    machine_type_id = Column(String, nullable=False)
+    manufacturer_id = Column(String, nullable=True)
+    status_id = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
 
 Base.metadata.create_all(bind=engine)
@@ -46,16 +47,17 @@ def process_message(ch, method, properties, body):
         data = cloud_event.get("data", {})
 
         if msg_type == "uretos.machine.command.create":
-            machine_id = str(uuid.uuid4())
+            machine_id = data.get("id", str(uuid.uuid4()))
             db = SessionLocal()
             try:
                 # 1. Persist Record
                 machine = MachineModel(
                     id=machine_id,
-                    name=data["name"],
-                    serial_number=data["serial_number"],
-                    machine_type=data["machine_type"],
-                    machine_manufacturer=data["machine_manufacturer"]
+                    name=data.get("name"),
+                    serial_number=data.get("serial_number"),
+                    machine_type_id=data.get("machine_type_id"),
+                    manufacturer_id=data.get("manufacturer_id"),
+                    status_id=data.get("status_id")
                 )
                 db.add(machine)
                 db.commit()
@@ -73,11 +75,13 @@ def process_message(ch, method, properties, body):
                 "correlationid": correlation_id,
                 "messagetype": "event",
                 "data": {
+                    "id": machine_id,
                     "machine_id": machine_id,
-                    "name": data["name"],
-                    "serial_number": data["serial_number"],
-                    "machine_type": data["machine_type"],
-                    "machine_manufacturer": data["machine_manufacturer"]
+                    "name": data.get("name"),
+                    "serial_number": data.get("serial_number"),
+                    "machine_type_id": data.get("machine_type_id"),
+                    "manufacturer_id": data.get("manufacturer_id"),
+                    "status_id": data.get("status_id")
                 }
             }
 
@@ -94,7 +98,7 @@ def process_message(ch, method, properties, body):
 
         ch.basic_ack(delivery_tag=method.delivery_tag)
     except Exception as e:
-        print(f"[machine-storage] Error processing message: {e}")
+        print(f"[machine-storage] Error processing message: {e}", flush=True)
         ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
 
 def start_consumer():
@@ -124,5 +128,8 @@ def start_consumer():
             )
             channel.start_consuming()
         except Exception as e:
-            print(f"[machine-storage] Connection waiting... ({e})")
+            print(f"[machine-storage] Connection waiting... ({e})", flush=True)
             time.sleep(3)
+
+if __name__ == "__main__":
+    start_consumer()
