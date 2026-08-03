@@ -11,7 +11,7 @@ import redis
 from fastapi import FastAPI, Query, Depends
 from pydantic import BaseModel
 
-from sqlalchemy import create_engine, Column, String, DateTime
+from sqlalchemy import create_engine, Column, String, DateTime, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import declarative_base, sessionmaker, Session
 
@@ -40,17 +40,22 @@ class MachineProjection(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True)
     name = Column(String, nullable=False)
-    serial_number = Column(String, nullable=False, unique=True)
+    serial_number = Column(String, nullable=False)
     machine_type_id = Column(UUID(as_uuid=True), nullable=False)
     manufacturer_id = Column(UUID(as_uuid=True), nullable=True)
     status_id = Column(UUID(as_uuid=True), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
+    deleted_at = Column(DateTime, nullable=True)
 
 
 def init_db_with_retry(max_retries=15, delay=2):
     for i in range(max_retries):
         try:
             Base.metadata.create_all(bind=engine)
+            # Safe migration check for existing tables without deleted_at
+            with engine.connect() as conn:
+                conn.execute(text("ALTER TABLE machine_projections ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP;"))
+                conn.commit()
             print("[machine-query] DB initialized successfully.", flush=True)
             return
         except Exception as e:
@@ -108,6 +113,16 @@ def start_event_consumer():
                                 m_id = uuid.UUID(m_id_str)
                                 item = db.query(MachineProjection).filter_by(id=m_id).first()
                                 
+                                # Handle Soft Delete Event
+                                if routing_key == "uretos.machine.event.deleted":
+                                    if item:
+                                        item.deleted_at = datetime.utcnow()
+                                        db.commit()
+                                        print(f"[machine-query] Soft-deleted Machine projection in DB: {m_id}", flush=True)
+                                    ch.basic_ack(delivery_tag=method.delivery_tag)
+                                    db.close()
+                                    return
+
                                 # Robust extraction supporting both snake_case and camelCase
                                 raw_type_id = data.get("machine_type_id") or data.get("machineTypeId")
                                 raw_manuf_id = (
@@ -131,7 +146,8 @@ def start_event_consumer():
                                         serial_number=m_serial,
                                         machine_type_id=m_type_id,
                                         manufacturer_id=m_manuf_id,
-                                        status_id=m_status_id
+                                        status_id=m_status_id,
+                                        deleted_at=None
                                     )
                                     db.add(item)
                                 else:
@@ -211,7 +227,8 @@ def healthz():
 
 @app.get("/api/v1/machines", response_model=List[MachineEnrichedDTO])
 def get_machines(lang: str = Query("de-DE", description="Language code"), db: Session = Depends(get_db)):
-    machines = db.query(MachineProjection).all()
+    # Nur Datensätze holen, die nicht per Soft-Delete gelöscht wurden
+    machines = db.query(MachineProjection).filter(MachineProjection.deleted_at.is_(None)).all()
     result = []
 
     for m in machines:
