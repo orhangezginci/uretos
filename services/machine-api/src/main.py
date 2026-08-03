@@ -22,6 +22,8 @@ RABBITMQ_PASS = os.getenv("RABBITMQ_DEFAULT_PASS", "uretos_dev_pass")
 
 EXCHANGE_COMMANDS = "uretos_commands"
 ROUTING_KEY_CREATE_MACHINE = "uretos.machine.command.create"
+ROUTING_KEY_UPDATE_MACHINE = "uretos.machine.command.update"
+ROUTING_KEY_DELETE_MACHINE = "uretos.machine.command.delete"
 
 
 def publish_command(routing_key: str, payload: dict) -> bool:
@@ -65,6 +67,14 @@ class MachineCreateDTO(BaseModel):
     name: str = Field(..., min_length=1, description="Name of the machine")
     serial_number: str = Field(..., min_length=1, description="Unique serial number")
     machine_type_id: str = Field(..., description="Valid UUIDv4 of an existing machine_type LOV")
+    manufacturer_id: Optional[str] = Field(None, description="Valid UUIDv4 of an existing manufacturer LOV")
+    status_id: Optional[str] = Field(None, description="Valid UUIDv4 of an existing status LOV")
+
+
+class MachineUpdateDTO(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, description="Name of the machine")
+    serial_number: Optional[str] = Field(None, min_length=1, description="Unique serial number")
+    machine_type_id: Optional[str] = Field(None, description="Valid UUIDv4 of an existing machine_type LOV")
     manufacturer_id: Optional[str] = Field(None, description="Valid UUIDv4 of an existing manufacturer LOV")
     status_id: Optional[str] = Field(None, description="Valid UUIDv4 of an existing status LOV")
 
@@ -127,4 +137,95 @@ def create_machine(payload: MachineCreateDTO):
         "command_id": command_id,
         "machine_id": machine_id,
         "message": "Machine creation command validated and queued for processing."
+    }
+
+
+@app.put("/api/v1/machines/{machine_id}", status_code=status.HTTP_202_ACCEPTED)
+@app.patch("/api/v1/machines/{machine_id}", status_code=status.HTTP_202_ACCEPTED)
+def update_machine(machine_id: str, payload: MachineUpdateDTO):
+    try:
+        uuid.UUID(machine_id)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid machine_id format. Must be a valid UUIDv4."
+        )
+
+    # Optional: Validierung falls IDs aktualisiert werden sollen
+    if payload.machine_type_id:
+        type_keys = redis_client.keys(f"lov:{payload.machine_type_id}:*")
+        if not type_keys:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid machine_type_id: '{payload.machine_type_id}' does not exist in LOV storage."
+            )
+
+    if payload.manufacturer_id:
+        manuf_keys = redis_client.keys(f"lov:{payload.manufacturer_id}:*")
+        if not manuf_keys:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Invalid manufacturer_id: '{payload.manufacturer_id}' does not exist in LOV storage."
+            )
+
+    command_id = str(uuid.uuid4())
+    command_payload = {
+        "command_id": command_id,
+        "timestamp": time.time(),
+        "data": {
+            "id": machine_id,
+            "name": payload.name,
+            "serial_number": payload.serial_number,
+            "machine_type_id": payload.machine_type_id,
+            "manufacturer_id": payload.manufacturer_id,
+            "status_id": payload.status_id,
+        },
+    }
+
+    published = publish_command(ROUTING_KEY_UPDATE_MACHINE, command_payload)
+    if not published:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to queue machine update command due to message broker error."
+        )
+
+    return {
+        "status": "accepted",
+        "command_id": command_id,
+        "machine_id": machine_id,
+        "message": "Machine update command validated and queued for processing."
+    }
+
+
+@app.delete("/api/v1/machines/{machine_id}", status_code=status.HTTP_202_ACCEPTED)
+def delete_machine(machine_id: str):
+    try:
+        uuid.UUID(machine_id)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid machine_id format. Must be a valid UUIDv4."
+        )
+
+    command_id = str(uuid.uuid4())
+    command_payload = {
+        "command_id": command_id,
+        "timestamp": time.time(),
+        "data": {
+            "id": machine_id
+        },
+    }
+
+    published = publish_command(ROUTING_KEY_DELETE_MACHINE, command_payload)
+    if not published:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to queue machine deletion command due to message broker error."
+        )
+
+    return {
+        "status": "accepted",
+        "command_id": command_id,
+        "machine_id": machine_id,
+        "message": "Machine deletion command queued for processing."
     }
