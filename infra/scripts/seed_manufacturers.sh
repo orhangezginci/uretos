@@ -39,5 +39,6 @@ create_manufacturer "DMG_MORI" "DMG MORI"
 create_manufacturer "TRUMPF" "TRUMPF"
 create_manufacturer "HAAS" "HAAS Automation"
 create_manufacturer "MAZAK" "Yamazaki Mazak"
+create_manufacturer "KUKA" "KUKA Automatisierungslösungen"
 
 echo "========================================================"

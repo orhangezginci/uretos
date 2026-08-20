@@ -48,7 +48,6 @@ def process_message(ch, method, properties, body):
     try:
         cloud_event = json.loads(body)
         
-        # Unterstützt sowohl direktes Routing via method.routing_key als auch CloudEvent-Strukturen
         routing_key = method.routing_key
         msg_type = cloud_event.get("type") or routing_key
         correlation_id = cloud_event.get("correlationid", str(uuid.uuid4()))
@@ -69,8 +68,9 @@ def process_message(ch, method, properties, body):
                 )
                 db.add(machine)
                 db.commit()
+                print(f"[machine-storage] Persisted Machine: {machine_id}", flush=True)
 
-                # 2. Emit Event
+                # 2. Emit Event (CloudEvent v1.0)
                 event_payload = {
                     "specversion": "1.0",
                     "id": str(uuid.uuid4()),
@@ -109,6 +109,7 @@ def process_message(ch, method, properties, body):
                     if machine and not machine.deleted_at:
                         machine.deleted_at = datetime.utcnow()
                         db.commit()
+                        print(f"[machine-storage] Soft-deleted Machine: {machine_id}", flush=True)
 
                         event_payload = {
                             "specversion": "1.0",
@@ -157,7 +158,6 @@ def start_consumer():
             connection = pika.BlockingConnection(parameters)
             channel = connection.channel()
 
-            # Declare Exchanges & Queues correctly
             channel.exchange_declare(exchange=EXCHANGE_COMMANDS, exchange_type="topic", durable=True)
             channel.exchange_declare(exchange=EXCHANGE_EVENTS, exchange_type="topic", durable=True)
             

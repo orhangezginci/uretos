@@ -1,6 +1,8 @@
-import os
+from datetime import datetime, timezone
 import json
+import os
 import time
+import uuid
 import pika
 
 RABBITMQ_HOST = os.getenv("RABBITMQ_HOST", "rabbitmq")
@@ -10,7 +12,7 @@ RABBITMQ_PASS = os.getenv("RABBITMQ_DEFAULT_PASS", "uretos_dev_pass")
 
 def start_consumer():
     credentials = pika.PlainCredentials(RABBITMQ_USER, RABBITMQ_PASS)
-    print("[lov-storage] Starting command consumer worker thread...", flush=True)
+    print("[lov-storage] Starting command consumer worker thread (CloudEvent-aware)...", flush=True)
 
     while True:
         try:
@@ -39,33 +41,54 @@ def start_consumer():
             def on_command_received(ch, method, properties, body):
                 try:
                     payload = json.loads(body)
+                    
+                    # CloudEvent-Attribute robust extrahieren
+                    correlation_id = payload.get("correlationid") or properties.correlation_id or str(uuid.uuid4())
+                    event_id = payload.get("id") or str(uuid.uuid4())
+                    
+                    # Daten-Payload isolieren (unterstützt sowohl CloudEvent 'data' als auch flache Payloads)
                     data = payload.get("data", payload)
-                    print(f"[lov-storage] Received command [{method.routing_key}]: {data.get('code')}", flush=True)
+                    category = data.get("category")
+                    code = data.get("code")
+                    translations = data.get("translations", {})
+                    
+                    print(f"[lov-storage] Received command [{method.routing_key}]: {category}/{code}", flush=True)
 
-                    # Project Domain Event for lov-query
-                    event_payload = {
-                        "event_id": payload.get("event_id"),
-                        "correlation_id": payload.get("correlation_id"),
-                        "category": data.get("category"),
-                        "code": data.get("code"),
-                        "translations": data.get("translations", {})
+                    # Konformes uRetOS CloudEvent v1.0 für das Domain-Event zusammenbauen
+                    cloudevent_payload = {
+                        "specversion": "1.0",
+                        "id": str(uuid.uuid4()),
+                        "type": "uretos.lov.event.created",
+                        "source": "uretos.lov-storage",
+                        "subject": f"lov:{category}:{code}",
+                        "time": datetime.now(timezone.utc).isoformat(),
+                        "datacontenttype": "application/json",
+                        "correlationid": correlation_id,
+                        "messagetype": "event",
+                        "data": {
+                            "lov_id": data.get("lov_id") or data.get("id") or str(uuid.uuid4()),
+                            "category": category,
+                            "code": code,
+                            "translations": translations
+                        }
                     }
 
                     channel.basic_publish(
                         exchange="uretos_events",
                         routing_key="uretos.lov.event.created",
-                        body=json.dumps(event_payload),
+                        body=json.dumps(cloudevent_payload),
                         properties=pika.BasicProperties(
                             delivery_mode=2,
-                            content_type="application/json"
+                            content_type="application/json",
+                            correlation_id=correlation_id
                         )
                     )
-                    print(f"[lov-storage] Published event 'uretos.lov.event.created' for {data.get('category')}/{data.get('code')}", flush=True)
+                    print(f"[lov-storage] Published CloudEvent 'uretos.lov.event.created' for {category}/{code} (CorrID: {correlation_id})", flush=True)
 
                     ch.basic_ack(delivery_tag=method.delivery_tag)
 
                 except Exception as ex:
-                    print(f"[lov-storage] Error processing message: {ex}", flush=True)
+                    print(f"[lov-query / storage] Error processing message: {ex}", flush=True)
                     ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
 
             channel.basic_qos(prefetch_count=10)

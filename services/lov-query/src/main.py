@@ -3,13 +3,11 @@ import json
 import time
 import threading
 import uuid
-from typing import List, Dict
-from datetime import datetime
+from typing import Dict
+from datetime import datetime, timezone
 
 import pika
-from fastapi import FastAPI, Query, Depends
-from pydantic import BaseModel
-
+from fastapi import FastAPI
 from sqlalchemy import create_engine, Column, String, DateTime, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import declarative_base, sessionmaker, Session
@@ -53,13 +51,20 @@ def init_db_with_retry(max_retries=15, delay=2):
     raise RuntimeError("[lov-query] Could not establish connection to lov-query-db.")
 
 
-# --- Event Consumer ---
+# --- RabbitMQ Setup ---
 RABBITMQ_HOST = os.getenv("RABBITMQ_HOST", "rabbitmq")
 RABBITMQ_PORT = int(os.getenv("RABBITMQ_PORT", "5672"))
 RABBITMQ_USER = os.getenv("RABBITMQ_DEFAULT_USER", "uretos")
 RABBITMQ_PASS = os.getenv("RABBITMQ_DEFAULT_PASS", "uretos_dev_pass")
 
-def start_event_consumer():
+EXCHANGE_EVENTS = "uretos_events"
+EXCHANGE_COMMANDS = "uretos_commands"
+QUEUE_EVENTS = "lov_query_events"
+QUEUE_RPC_REQUESTS = "lov_query_rpc_requests"
+
+
+# --- Background Worker (CloudEvent Consumer + RPC Server) ---
+def start_query_worker():
     credentials = pika.PlainCredentials(RABBITMQ_USER, RABBITMQ_PASS)
     
     while True:
@@ -75,18 +80,72 @@ def start_event_consumer():
             )
             channel = connection.channel()
             
-            channel.exchange_declare(exchange="uretos_events", exchange_type="topic", durable=True)
-            channel.queue_declare(queue="lov_query_events", durable=True)
-            channel.queue_bind(exchange="uretos_events", queue="lov_query_events", routing_key="uretos.lov.event.#")
-            channel.queue_bind(exchange="uretos_events", queue="lov_query_events", routing_key="uretos.lov.#")
+            # Exchanges & Queues deklarieren
+            channel.exchange_declare(exchange=EXCHANGE_EVENTS, exchange_type="topic", durable=True)
+            channel.exchange_declare(exchange=EXCHANGE_COMMANDS, exchange_type="topic", durable=True)
+            
+            channel.queue_declare(queue=QUEUE_EVENTS, durable=True)
+            channel.queue_declare(queue=QUEUE_RPC_REQUESTS, durable=True)
 
-            print("[lov-query] Connected to RabbitMQ. Listening for events...", flush=True)
+            # Bindings
+            channel.queue_bind(exchange=EXCHANGE_EVENTS, queue=QUEUE_EVENTS, routing_key="uretos.lov.event.#")
+            channel.queue_bind(exchange=EXCHANGE_EVENTS, queue=QUEUE_EVENTS, routing_key="uretos.lov.#")
+            channel.queue_bind(exchange=EXCHANGE_COMMANDS, queue=QUEUE_RPC_REQUESTS, routing_key="uretos.lov.query.#")
 
-            def process_event(ch, method, properties, body):
+            print("[lov-query] Connected to RabbitMQ (CloudEvent-aware). Ready for Events and RPC requests...", flush=True)
+
+            def handle_message(ch, method, properties, body):
                 try:
-                    payload = json.loads(body)
-                    data = payload.get("data", payload)
+                    cloudevent = json.loads(body)
+                    routing_key = method.routing_key
                     
+                    msg_type = cloudevent.get("type") or routing_key
+                    messagetype = cloudevent.get("messagetype", "event")
+                    correlation_id = cloudevent.get("correlationid") or properties.correlation_id
+                    data = cloudevent.get("data", cloudevent)
+
+                    # --- 1. RPC REQUEST HANDLING (Query) ---
+                    if routing_key.startswith("uretos.lov.query.") or messagetype == "query":
+                        category = data.get("category")
+                        lang = data.get("lang", "en-US")
+                        response_data = []
+
+                        db: Session = SessionLocal()
+                        try:
+                            if category:
+                                items = db.query(LovItemProjection).filter(LovItemProjection.category == category).all()
+                                for item in items:
+                                    trans: Dict[str, str] = item.translations or {}
+                                    resolved_value = (
+                                        trans.get(lang) or
+                                        trans.get("en-US") or
+                                        (next(iter(trans.values())) if trans else item.code)
+                                    )
+                                    response_data.append({
+                                        "id": str(item.id),
+                                        "category": item.category,
+                                        "code": item.code,
+                                        "value": resolved_value
+                                    })
+                        finally:
+                            db.close()
+
+                        # Antwort via RPC an reply_to zurückschicken
+                        if properties.reply_to and properties.correlation_id:
+                            channel.basic_publish(
+                                exchange='',
+                                routing_key=properties.reply_to,
+                                properties=pika.BasicProperties(
+                                    correlation_id=properties.correlation_id,
+                                    content_type="application/json"
+                                ),
+                                body=json.dumps(response_data)
+                            )
+
+                        ch.basic_ack(delivery_tag=method.delivery_tag)
+                        return
+
+                    # --- 2. EVENT HANDLING (Projections via CloudEvent) ---
                     category = data.get("category")
                     code = data.get("code")
                     translations = data.get("translations", {})
@@ -107,7 +166,7 @@ def start_event_consumer():
                                 item.translations = translations
 
                             db.commit()
-                            print(f"[lov-query] Projected LOV entry (JSONB/UUID): {category}/{code}", flush=True)
+                            print(f"[lov-query] Projected CloudEvent entry to DB: {category}/{code} (CorrID: {correlation_id})", flush=True)
                         except Exception as ex:
                             db.rollback()
                             print(f"[lov-query] DB projection error: {ex}", flush=True)
@@ -116,11 +175,12 @@ def start_event_consumer():
 
                     ch.basic_ack(delivery_tag=method.delivery_tag)
                 except Exception as e:
-                    print(f"[lov-query] Failed to process message: {e}", flush=True)
+                    print(f"[lov-query] Message processing failed: {e}", flush=True)
                     ch.basic_nack(delivery_tag=method.delivery_tag, requeue=False)
 
             channel.basic_qos(prefetch_count=10)
-            channel.basic_consume(queue="lov_query_events", on_message_callback=process_event)
+            channel.basic_consume(queue=QUEUE_EVENTS, on_message_callback=handle_message)
+            channel.basic_consume(queue=QUEUE_RPC_REQUESTS, on_message_callback=handle_message)
             channel.start_consuming()
 
         except Exception as e:
@@ -128,59 +188,15 @@ def start_event_consumer():
             time.sleep(5)
 
 
-# --- FastAPI Application ---
-class LovResponseDTO(BaseModel):
-    id: str
-    category: str
-    code: str
-    value: str
-
+# --- FastAPI Health-Check Service ---
 app = FastAPI(title="uRetOS LOV Query Service", version="0.1.0")
-
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
 
 @app.on_event("startup")
 def startup_event():
     init_db_with_retry()
-    consumer_thread = threading.Thread(target=start_event_consumer, daemon=True)
-    consumer_thread.start()
+    worker_thread = threading.Thread(target=start_query_worker, daemon=True)
+    worker_thread.start()
 
 @app.get("/healthz")
 def healthz():
     return {"status": "ok", "service": "lov-query"}
-
-@app.get("/api/v1/lov/{category}", response_model=List[LovResponseDTO])
-def get_lov_by_category(
-    category: str,
-    lang: str = Query(default="en-US", description="Locale key, e.g. de-DE, en-US, tr-TR"),
-    db: Session = Depends(get_db)
-):
-    """
-    Fetches LOV entries by category localized by `?lang=`.
-    Fallback chain: Requested `lang` -> `en-US` -> First available key -> Raw `code`.
-    """
-    items = db.query(LovItemProjection).filter(LovItemProjection.category == category).all()
-
-    result = []
-    for item in items:
-        trans: Dict[str, str] = item.translations or {}
-        
-        resolved_value = (
-            trans.get(lang) or
-            trans.get("en-US") or
-            (next(iter(trans.values())) if trans else item.code)
-        )
-        
-        result.append(LovResponseDTO(
-            id=str(item.id),
-            category=item.category,
-            code=item.code,
-            value=resolved_value
-        ))
-
-    return result

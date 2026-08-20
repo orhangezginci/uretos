@@ -7,241 +7,39 @@ services:
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
-      timeout: 3s
+      timeout: 5s
       retries: 5
     networks:
-      - uretos-net 
+      - uretos-net
 
   rabbitmq:
-    image: rabbitmq:3.13-management-alpine
+    image: rabbitmq:3-management-alpine
     container_name: uretos-rabbitmq
-    env_file:
-      - .env
     ports:
-      - "5673:5672"
+      - "5672:5672"
       - "15672:15672"
     environment:
-      RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER}
-      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS}
-    volumes:
-      - ./infra/rabbitmq/definitions.json:/etc/rabbitmq/definitions.json:ro
-      - ./infra/rabbitmq/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro
+      RABBITMQ_DEFAULT_USER: uretos
+      RABBITMQ_DEFAULT_PASS: uretos_dev_pass
     healthcheck:
-      test: ["CMD", "rabbitmq-diagnostics", "-q", "check_running"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    networks:
-      - uretos-net
-
-  # --- Machine Domain Services ---
-  machine-api:
-    build:
-      context: ./services/machine-api
-      dockerfile: Dockerfile
-    container_name: uretos-machine-api
-    env_file:
-      - .env
-    ports:
-      - "8000:8000"
-    environment:
-      RABBITMQ_HOST: rabbitmq
-      RABBITMQ_PORT: 5672
-      RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER}
-      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS}
-      SERVICE_VERSION: "0.1.0"
-    depends_on:
-      rabbitmq:
-        condition: service_healthy
-    networks:
-      - uretos-net
-
-  machine-db:
-    image: postgres:16-alpine
-    container_name: uretos-machine-db
-    env_file:
-      - .env
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER:-uretos}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-uretos_dev_pass}
-      POSTGRES_DB: machine_db
-    ports:
-      - "5432:5432"
-    volumes:
-      - machine_db_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U uretos -d machine_db"]
+      test: ["CMD", "rabbitmq-diagnostics", "check_running"]
       interval: 5s
       timeout: 5s
       retries: 5
-    networks:
-      - uretos-net
-
-  machine-storage:
-    build:
-      context: ./services/machine-storage
-      dockerfile: Dockerfile
-    container_name: uretos-machine-storage
-    env_file:
-      - .env
-    ports:
-      - "8001:8001"
-    environment:
-      RABBITMQ_HOST: rabbitmq
-      RABBITMQ_PORT: 5672
-      RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER}
-      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS}
-      POSTGRES_HOST: machine-db
-      POSTGRES_PORT: 5432
-      POSTGRES_USER: ${POSTGRES_USER:-uretos}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-uretos_dev_pass}
-      POSTGRES_DB: machine_db
-      SERVICE_VERSION: "0.1.0"
-    depends_on:
-      rabbitmq:
-        condition: service_healthy
-      machine-db:
-        condition: service_healthy
-    networks:
-      - uretos-net
-
-  machine-query-db:
-    image: postgres:16-alpine
-    container_name: uretos-machine-query-db
-    env_file:
-      - .env
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER:-uretos}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-uretos_dev_pass}
-      POSTGRES_DB: machine_query_db
-    ports:
-      - "5433:5432"
-    volumes:
-      - machine_query_db_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U uretos -d machine_query_db"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-    networks:
-      - uretos-net
-
-  machine-query:
-    build:
-      context: ./services/machine-query
-      dockerfile: Dockerfile
-    container_name: uretos-machine-query
-    env_file:
-      - .env
-    ports:
-      - "8002:8002"
-    environment:
-      RABBITMQ_HOST: rabbitmq
-      RABBITMQ_PORT: 5672
-      RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER}
-      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS}
-      POSTGRES_HOST: machine-query-db
-      POSTGRES_PORT: 5432
-      POSTGRES_USER: ${POSTGRES_USER:-uretos}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-uretos_dev_pass}
-      POSTGRES_DB: machine_query_db
-      REDIS_HOST: redis
-      REDIS_PORT: 6379
-      SERVICE_VERSION: "0.1.0"
-    depends_on:
-      rabbitmq:
-        condition: service_healthy
-      machine-query-db:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-    networks:
-      - uretos-net
-
-  # --- Multilingual LOV Domain Services ---
-  lov-api:
-    build:
-      context: ./services/lov-api
-      dockerfile: Dockerfile
-    container_name: uretos-lov-api
-    env_file:
-      - .env
-    ports:
-      - "8003:8003"
-    environment:
-      RABBITMQ_HOST: rabbitmq
-      RABBITMQ_PORT: 5672
-      RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER}
-      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS}
-      SERVICE_VERSION: "0.1.0"
-    depends_on:
-      rabbitmq:
-        condition: service_healthy
-    networks:
-      - uretos-net
-
-  lov-db:
-    image: postgres:16-alpine
-    container_name: uretos-lov-db
-    env_file:
-      - .env
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER:-uretos}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-uretos_dev_pass}
-      POSTGRES_DB: lov_db
-    ports:
-      - "5434:5432"
-    volumes:
-      - lov_db_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U uretos -d lov_db"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
-    networks:
-      - uretos-net
-
-  lov-storage:
-    build:
-      context: ./services/lov-storage
-      dockerfile: Dockerfile
-    container_name: uretos-lov-storage
-    env_file:
-      - .env
-    ports:
-      - "8005:8005"
-    environment:
-      RABBITMQ_HOST: rabbitmq
-      RABBITMQ_PORT: 5672
-      RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER}
-      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS}
-      POSTGRES_HOST: lov-db
-      POSTGRES_PORT: 5432
-      POSTGRES_USER: ${POSTGRES_USER:-uretos}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-uretos_dev_pass}
-      POSTGRES_DB: lov_db
-      SERVICE_VERSION: "0.1.0"
-    depends_on:
-      rabbitmq:
-        condition: service_healthy
-      lov-db:
-        condition: service_healthy
     networks:
       - uretos-net
 
   lov-query-db:
-    image: postgres:16-alpine
+    image: postgres:15-alpine
     container_name: uretos-lov-query-db
-    env_file:
-      - .env
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-uretos}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-uretos_dev_pass}
       POSTGRES_DB: lov_query_db
+      POSTGRES_USER: uretos
+      POSTGRES_PASSWORD: uretos_dev_pass
     ports:
-      - "5435:5432"
+      - "5433:5432"
     volumes:
-      - lov_query_db_data:/var/lib/postgresql/data
+      - ./services/lov-query/init.sql:/docker-entrypoint-initdb.d/init.sql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U uretos -d lov_query_db"]
       interval: 5s
@@ -250,26 +48,216 @@ services:
     networks:
       - uretos-net
 
-  lov-query:
+  machine-query-db:
+    image: postgres:16-alpine
+    container_name: uretos-machine-query-db
+    environment:
+      POSTGRES_DB: machine_query_db
+      POSTGRES_USER: uretos
+      POSTGRES_PASSWORD: uretos_dev_pass
+    ports:
+      - "5434:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U uretos -d machine_query_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - uretos-net
+
+  timescaledb:
+    image: timescale/timescaledb:latest-pg15
+    container_name: uretos-timescale
+    environment:
+      POSTGRES_DB: uretos_telemetry
+      POSTGRES_USER: uretos
+      POSTGRES_PASSWORD: uretos_secure_password
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ../opcua-simulator/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U uretos -d uretos_telemetry"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - uretos-net
+
+  machine-db:
+    image: postgres:16-alpine
+    container_name: uretos-machine-db
+    environment:
+      POSTGRES_DB: machine_db
+      POSTGRES_USER: uretos
+      POSTGRES_PASSWORD: uretos_dev_pass
+    ports:
+      - "5435:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U uretos -d machine_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - uretos-net
+
+  gateway-token-db:
+    image: postgres:16-alpine
+    container_name: uretos-gateway-token-db
+    environment:
+      POSTGRES_DB: gateway_token_db
+      POSTGRES_USER: uretos
+      POSTGRES_PASSWORD: uretos_dev_pass
+    ports:
+      - "5436:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U uretos -d gateway_token_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - uretos-net
+
+  opc-server:
     build:
-      context: ./services/lov-query
+      context: ../opcua-simulator
       dockerfile: Dockerfile
+    container_name: uretos-opc-server
+    command: python opc_server.py MEC-01 4840 "DMG MORI" "DMU 75 Monoblock" "CNC_MILL_5AXIS"
+    ports:
+      - "4840:4840"
+    restart: unless-stopped
+    networks:
+      - uretos-net
+
+  machine-history-query:
+    build:
+      context: ./services/machine-history-query
+      dockerfile: Dockerfile
+    container_name: uretos-machine-history-query
+    restart: always
+    environment:
+      - POSTGRES_HOST=timescaledb
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=uretos_telemetry
+      - POSTGRES_USER=uretos
+      - POSTGRES_PASSWORD=uretos_secure_password
+      - RABBITMQ_HOST=rabbitmq
+      - RABBITMQ_PORT=5672
+      - RABBITMQ_DEFAULT_USER=uretos
+      - RABBITMQ_DEFAULT_PASS=uretos_dev_pass
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      timescaledb:
+        condition: service_healthy
+    networks:
+      - uretos-net
+
+  lov-storage:
+    build: ./services/lov-storage
+    container_name: uretos-lov-storage
+    environment:
+      - RABBITMQ_HOST=rabbitmq
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - uretos-net
+
+  lov-api:
+    build: ./services/lov-api
+    container_name: uretos-lov-api
+    ports:
+      - "8003:8003"
+    environment:
+      - RABBITMQ_HOST=rabbitmq
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - uretos-net
+  
+  lov-validation:
+    build: ./services/lov-validation
+    container_name: uretos-lov-validation
+    restart: always
+    environment:
+      - POSTGRES_USER=uretos
+      - POSTGRES_PASSWORD=uretos_dev_pass
+      - POSTGRES_HOST=lov-validation-db
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=lov_validation_db
+      - RABBITMQ_HOST=rabbitmq
+      - RABBITMQ_PORT=5672
+      - RABBITMQ_DEFAULT_USER=uretos
+      - RABBITMQ_DEFAULT_PASS=uretos_dev_pass
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      lov-validation-db:
+        condition: service_healthy
+    networks:
+      - uretos-net
+
+  lov-validation-db:
+    image: postgres:15-alpine
+    container_name: uretos-lov-validation-db
+    restart: always
+    environment:
+      - POSTGRES_USER=uretos
+      - POSTGRES_PASSWORD=uretos_dev_pass
+      - POSTGRES_DB=lov_validation_db
+    volumes:
+      - lov_validation_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U uretos -d lov_validation_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - uretos-net
+
+  machine-api:
+    build: ./services/machine-api
+    container_name: uretos-machine-api
+    ports:
+      - "8000:8000"
+    environment:
+      - RABBITMQ_HOST=rabbitmq
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - uretos-net
+
+  machine-storage:
+    build: ./services/machine-storage
+    container_name: uretos-machine-storage
+    environment:
+      - RABBITMQ_HOST=rabbitmq
+      - POSTGRES_HOST=machine-db
+      - POSTGRES_DB=machine_db
+      - POSTGRES_USER=uretos
+      - POSTGRES_PASSWORD=uretos_dev_pass
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      machine-db:
+        condition: service_healthy
+    networks:
+      - uretos-net
+
+  lov-query:
+    build: ./services/lov-query
     container_name: uretos-lov-query
-    env_file:
-      - .env
     ports:
       - "8004:8004"
     environment:
-      RABBITMQ_HOST: rabbitmq
-      RABBITMQ_PORT: 5672
-      RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER}
-      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS}
-      POSTGRES_HOST: lov-query-db
-      POSTGRES_PORT: 5432
-      POSTGRES_USER: ${POSTGRES_USER:-uretos}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-uretos_dev_pass}
-      POSTGRES_DB: lov_query_db
-      SERVICE_VERSION: "0.1.0"
+      - RABBITMQ_HOST=rabbitmq
+      - POSTGRES_HOST=lov-query-db
+      - POSTGRES_DB=lov_query_db
+      - POSTGRES_USER=uretos
+      - POSTGRES_PASSWORD=uretos_dev_pass
     depends_on:
       rabbitmq:
         condition: service_healthy
@@ -278,11 +266,73 @@ services:
     networks:
       - uretos-net
 
+  machine-query:
+    build: ./services/machine-query
+    container_name: uretos-machine-query
+    environment:
+      - RABBITMQ_HOST=rabbitmq
+      - POSTGRES_HOST=machine-query-db
+      - POSTGRES_DB=machine_query_db
+      - POSTGRES_USER=uretos
+      - POSTGRES_PASSWORD=uretos_dev_pass
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      machine-query-db:
+        condition: service_healthy
+    networks:
+      - uretos-net
+  
+  gateway-api:
+    build: ./services/gateway-api
+    container_name: uretos-gateway-api
+    ports:
+      - "8001:8000"
+    environment:
+      - RABBITMQ_HOST=rabbitmq
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - uretos-net
+
+  gateway-token-command:
+    build: ./services/gateway-token-command
+    container_name: uretos-gateway-token-command
+    environment:
+      - RABBITMQ_HOST=rabbitmq
+      - POSTGRES_HOST=gateway-token-db
+      - POSTGRES_DB=gateway_token_db
+      - POSTGRES_USER=uretos
+      - POSTGRES_PASSWORD=uretos_dev_pass
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      gateway-token-db:
+        condition: service_healthy
+    networks:
+      - uretos-net
+
+  gateway-token-query:
+    build: ./services/gateway-token-query
+    container_name: uretos-gateway-token-query
+    environment:
+      - RABBITMQ_HOST=rabbitmq
+      - POSTGRES_HOST=gateway-token-db
+      - POSTGRES_DB=gateway_token_db
+      - POSTGRES_USER=uretos
+      - POSTGRES_PASSWORD=uretos_dev_pass
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      gateway-token-db:
+        condition: service_healthy
+    networks:
+      - uretos-net
+
 volumes:
-  machine_db_data:
-  machine_query_db_data:
-  lov_db_data:
-  lov_query_db_data:
+  pgdata:
+  lov_validation_db_data:
 
 networks:
   uretos-net:
