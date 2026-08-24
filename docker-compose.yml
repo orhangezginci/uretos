@@ -216,6 +216,26 @@ services:
       retries: 5
     networks:
       - uretos-net
+      
+  enricher-service:
+    build:
+      context: ./services/enricher_service
+      dockerfile: Dockerfile
+    container_name: uretos-enricher-service
+    ports:
+      - "8005:8000"
+    environment:
+      - ENV=development
+      - RABBITMQ_HOST=rabbitmq
+      - RABBITMQ_PORT=5672
+      - RABBITMQ_DEFAULT_USER=uretos
+      - RABBITMQ_DEFAULT_PASS=uretos_dev_pass
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - uretos-net
 
   machine-api:
     build: ./services/machine-api
@@ -330,9 +350,76 @@ services:
     networks:
       - uretos-net
 
+  activation-tool:
+    build: ./services/activation-tool
+    container_name: uretos-activation-tool
+    ports:
+      - "8080:8080"
+    networks:
+      - uretos-net
+
+  opc-harvester:
+    build: ./services/opc-harvester
+    container_name: uretos-opc-harvester
+    environment:
+      - RABBITMQ_URL=amqp://uretos:uretos_dev_pass@rabbitmq:5672/
+      - TENANT_ID=${TENANT_ID:-tenant-6b884871}
+      - OPCUA_SERVER_URL=opc.tcp://opc-server:4840/freeopcua/server/
+      - OPCUA_NODE_IDS=ns=2;i=2,ns=2;i=3
+      - CLOUD_RABBITMQ_URL=amqp://uretos:uretos_dev_pass@rabbitmq:5672/
+      - RABBIT_EXCHANGE=amq.topic
+      - ROUTING_KEY=opc.command.${TENANT_ID:-tenant-6b884871}
+      - EDGE_TOKEN=DEIN_AKTIVIERTER_TOKEN
+      - POLL_INTERVAL_SEC=1.0
+      - PYTHONUNBUFFERED=1
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - uretos-net
+
+  token-validator-db:
+    image: postgres:16-alpine
+    container_name: uretos-token-validator-db
+    environment:
+      POSTGRES_DB: token_validator_db
+      POSTGRES_USER: uretos
+      POSTGRES_PASSWORD: uretos_dev_pass
+    ports:
+      - "5437:5432"
+    volumes:
+      - token_validator_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U uretos -d token_validator_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - uretos-net
+
+  token-validator:
+    build: ./services/token-validator
+    container_name: token-validator
+    environment:
+      - POSTGRES_USER=uretos
+      - POSTGRES_PASSWORD=uretos_dev_pass
+      - POSTGRES_HOST=token-validator-db
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=token_validator_db
+      - RABBITMQ_HOST=rabbitmq
+    depends_on:
+      token-validator-db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    networks:
+      - uretos-net
+
 volumes:
   pgdata:
   lov_validation_db_data:
+  token_validator_data:
 
 networks:
   uretos-net:
